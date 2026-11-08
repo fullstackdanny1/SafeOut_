@@ -1,3 +1,5 @@
 .env
 node_modules/
 safeout-api-tests.http
+.specs.md
+safeout-backend-plan.md

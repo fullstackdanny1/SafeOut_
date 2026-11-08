@@ -36,8 +36,8 @@ router.post('/', asyncHandler(async (req, res) => {
   res.status(201).json(result.rows[0]);
 }));
 
-// Protejat — dispecerul vede lista de dovezi (fără conținutul brut în listare, doar metadate)
-router.get('/', authenticate, requireRole('super_admin'), asyncHandler(async (req, res) => {
+// Protejat — lista de dovezi (super_admin vede tot, dispecerul vede lista pentru incidentele din responsabilitate)
+router.get('/', authenticate, asyncHandler(async (req, res) => {
   const result = await pool.query(
     'SELECT id, incident_id, file_type, legal_hold, uploaded_at, expires_at FROM evidence ORDER BY uploaded_at DESC'
   );

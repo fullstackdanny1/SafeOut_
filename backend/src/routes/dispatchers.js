@@ -19,6 +19,13 @@ router.get('/me', authenticate, asyncHandler(async (req, res) => {
   res.json(result.rows[0]);
 }));
 
+router.get('/', authenticate, requireRole('super_admin'), asyncHandler(async (req, res) => {
+  const result = await pool.query(
+    'SELECT id, email, full_name, city, role, created_at, true AS active FROM dispatchers ORDER BY created_at DESC'
+  );
+  res.json(result.rows);
+}));
+
 router.patch('/me', authenticate, asyncHandler(async (req, res) => {
   const { full_name, city } = req.body;
   if (!full_name && !city) {

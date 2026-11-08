@@ -117,16 +117,30 @@ router.patch('/:id', authenticate, asyncHandler(async (req, res) => {
 
 router.post('/:id/actions', authenticate, asyncHandler(async (req, res) => {
   const { id } = req.params;
-  const { action_type } = req.body;
+  const { action_type, note } = req.body;
 
   if (!action_type) {
     throw new AppError(400, 'Date lipsă', 'action_type este obligatoriu');
   }
 
+  const detailText = note ? `Incident #${id}: ${note}` : `Incident #${id}`;
+
   await pool.query(
     `INSERT INTO audit_log (dispatcher_id, action, detail) VALUES ($1, $2, $3)`,
-    [req.dispatcher.id, action_type, `Incident #${id}`]
+    [req.dispatcher.id, action_type, detailText]
   );
+
+  if (note) {
+    await pool.query(
+      `UPDATE incidents
+       SET notes = CASE
+         WHEN notes IS NULL OR notes = '' THEN $1
+         ELSE notes || E'\n' || $1
+       END
+       WHERE id = $2`,
+      [note, id]
+    );
+  }
 
   res.status(201).json({ status: 'logged' });
 }));

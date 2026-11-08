@@ -1,20 +1,35 @@
 import 'dotenv/config';
 import pg from 'pg';
 
-const {Pool} = pg;
+const { Pool } = pg;
 
-console.log('DATABASE_URL încărcat:', process.env.DATABASE_URL ? 'DA' : 'NU');
+const dbUrl = process.env.DATABASE_URL || process.env.SUPABASE_DB_URL;
+
+console.log('DATABASE_URL încărcat:', dbUrl ? 'DA' : 'NU');
+
+// Supabase / hosted Postgres instances enforce SSL connections.
+const useSsl =
+  process.env.PGSSLMODE === 'require' ||
+  (dbUrl && (dbUrl.includes('supabase.co') || dbUrl.includes('sslmode=require')));
 
 export const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
+  ssl: useSsl ? { rejectUnauthorized: false } : undefined,
 });
 
-pool.query('SELECT current_user, current_database()').then(r => {
-  console.log('Node se conectează ca:', r.rows[0]);
-});
+if (dbUrl) {
+  pool
+    .query('SELECT current_user, current_database()')
+    .then((r) => {
+      console.log('Node se conectează ca:', r.rows[0]);
+    })
+    .catch((err) => {
+      console.error('Eroare conexiune DB la pornire:', err.message);
+    });
+}
 
 pool.on('error', (err) => {
-    console.error('Unexpected error on idle Postgres client', err);
+  console.error('Unexpected error on idle Postgres client', err);
 });
 
 export async function queryAsDispatcher(dispatcher, queryText, params = []) {

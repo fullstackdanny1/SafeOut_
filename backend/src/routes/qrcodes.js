@@ -45,4 +45,41 @@ router.get('/', authenticate, requireRole('super_admin'), asyncHandler(async (re
   res.json(result.rows);
 }));
 
+// Protejat — super_admin activează/dezactivează un cod QR
+router.patch('/:code', authenticate, requireRole('super_admin'), asyncHandler(async (req, res) => {
+  const { code } = req.params;
+  const { active } = req.body;
+
+  if (active === undefined) {
+    throw new AppError(400, 'Date lipsă', 'Câmpul active este obligatoriu');
+  }
+
+  const result = await pool.query(
+    'UPDATE qrcodes SET active = $1 WHERE code = $2 RETURNING *',
+    [active, code]
+  );
+
+  if (result.rowCount === 0) {
+    throw new AppError(404, 'Cod QR inexistent', 'Nu există acest cod QR');
+  }
+
+  res.json(result.rows[0]);
+}));
+
+// Protejat — super_admin poate șterge un cod QR (după id sau code)
+router.delete('/:idOrCode', authenticate, requireRole('super_admin'), asyncHandler(async (req, res) => {
+  const { idOrCode } = req.params;
+  const isNumeric = /^\d+$/.test(idOrCode);
+  const query = isNumeric
+    ? 'DELETE FROM qrcodes WHERE id = $1 RETURNING id'
+    : 'DELETE FROM qrcodes WHERE code = $1 RETURNING id';
+
+  const result = await pool.query(query, [idOrCode]);
+  if (result.rowCount === 0) {
+    throw new AppError(404, 'Cod QR inexistent', 'Nu există acest cod QR');
+  }
+
+  res.status(204).send();
+}));
+
 export default router;
