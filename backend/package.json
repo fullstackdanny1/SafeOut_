@@ -9,6 +9,8 @@
     "pg": "^8.23.0"
   },
   "scripts": {
+  "start": "node src/server.js",
+  "dev": "node src/server.js",
   "migrate": "dotenv -e .env -- node-pg-migrate -m src/db/migrations --database-url-var DATABASE_URL --no-reject-unauthorized up"
 },
   "type": "module",
