@@ -37,6 +37,8 @@ const I18N = {
     success_title: "Help is on the way",
     success_sub: "Stay where you are if it's safe.",
     success_back: "Back",
+    contact_sent_title: "Sharing your location",
+    contact_sent_sub: "Keep this SafeOut page open so your live location keeps updating for them.",
     // help
     help_h: "Help &amp; info",
     help_sub: "What SafeOut does",
@@ -95,6 +97,8 @@ const I18N = {
     success_title: "Ajutorul vine",
     success_sub: "Rămâi pe loc dacă e sigur.",
     success_back: "Înapoi",
+    contact_sent_title: "Îți partajezi locația",
+    contact_sent_sub: "Ține această pagină SafeOut deschisă ca locația ta live să se actualizeze pentru ei.",
     help_h: "Ajutor &amp; info",
     help_sub: "Ce face SafeOut",
     help_who_label: "Cine suntem",
@@ -150,6 +154,8 @@ const I18N = {
     success_title: "Hilfe ist unterwegs",
     success_sub: "Bleib, wo du bist, wenn es sicher ist.",
     success_back: "Zurück",
+    contact_sent_title: "Standort wird geteilt",
+    contact_sent_sub: "Lass diese SafeOut-Seite offen, damit dein Live-Standort für sie aktuell bleibt.",
     help_h: "Hilfe &amp; Info",
     help_sub: "Was SafeOut macht",
     help_who_label: "Wer wir sind",
@@ -231,7 +237,8 @@ function getLocation() {
     navigator.geolocation.getCurrentPosition(
       p => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: p.coords.accuracy, method: p.coords.accuracy < 50 ? 'gps' : 'wifi' }),
       () => resolve({ lat: null, lng: null, accuracy: null, method: 'unavailable' }),
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+      // first GPS fix on a phone can take 10-30s; 5s was too short and often returned null
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 30000 }
     );
   });
 }
@@ -288,9 +295,12 @@ async function uploadEvidence(incidentId, photos, audio) {
 
 // ---- 4. Record incident (POST /incidents) ----
 async function recordIncident(situationType, extra = {}) {
-  // Use the QR's fixed coordinates when available, otherwise live GPS.
+  // Use a pre-fetched fix if given, else the QR's fixed coordinates, else live GPS.
   let loc;
-  if (currentQRInfo && currentQRInfo.latitude && currentQRInfo.longitude) {
+  if (extra.__loc) {
+    loc = extra.__loc;
+    delete extra.__loc;
+  } else if (currentQRInfo && currentQRInfo.latitude && currentQRInfo.longitude) {
     loc = { lat: Number(currentQRInfo.latitude), lng: Number(currentQRInfo.longitude), accuracy: 5, method: 'qr_fixed' };
   } else {
     loc = await getLocation();
@@ -327,6 +337,13 @@ function showScreen(id) {
 function goHome() { closeSheet(); showScreen('screen-main'); }
 function showHelp() { showScreen('screen-help'); }
 
+function setSuccess(title, sub) {
+  const t = document.querySelector('#screen-success [data-i18n="success_title"]');
+  const s = document.querySelector('#screen-success [data-i18n="success_sub"]');
+  if (t) t.textContent = title;
+  if (s) s.textContent = sub;
+}
+
 // ---- 6. Minimal action screen ----
 function showAct(type) {
   pendingType = type;
@@ -358,6 +375,8 @@ async function confirmAct() {
   if (type === '112') setTimeout(() => { window.location.href = 'tel:112'; }, 600);
   if (type === '119') setTimeout(() => { window.location.href = 'tel:119'; }, 600);
 
+  const dd = I18N[CUR_LANG];
+  setSuccess(dd.success_title, dd.success_sub);
   showScreen('screen-success');
 
   let stype = 'escort', vmsg = null, withEvidence = false, live = false;
@@ -388,23 +407,29 @@ async function confirmAct() {
 // the moving dot even if the victim can't say where they are. Works only while the
 // page stays open (browser limitation); auto-stops after 30 minutes.
 let liveWatchId = null, liveStopTimer = null, liveLastSent = 0;
+let liveIncidentId = null, liveToken = null, liveCity = null;
+
+function sendFix(pos) {
+  if (liveIncidentId == null || !liveToken) return;
+  api.updateLocation(liveIncidentId, {
+    latitude: pos.coords.latitude,
+    longitude: pos.coords.longitude,
+    location_accuracy_m: pos.coords.accuracy,
+    update_token: liveToken,
+    city: liveCity
+  }).catch(() => {});
+}
 
 function startLiveTracking(incidentId, token, city) {
   stopLiveTracking();
   if (!navigator.geolocation) return;
-  liveLastSent = 0;
+  liveIncidentId = incidentId; liveToken = token; liveCity = city; liveLastSent = 0;
   liveWatchId = navigator.geolocation.watchPosition(
     pos => {
       const now = Date.now();
       if (now - liveLastSent < 8000) return;   // throttle: at most one update / 8s
       liveLastSent = now;
-      api.updateLocation(incidentId, {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-        location_accuracy_m: pos.coords.accuracy,
-        update_token: token,
-        city: city
-      }).catch(() => {});
+      sendFix(pos);
     },
     () => {},
     { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
@@ -414,7 +439,7 @@ function startLiveTracking(incidentId, token, city) {
 
 function stopLiveTracking() {
   if (liveWatchId !== null && navigator.geolocation) navigator.geolocation.clearWatch(liveWatchId);
-  liveWatchId = null;
+  liveWatchId = null; liveIncidentId = null; liveToken = null; liveCity = null;
   if (liveStopTimer) { clearTimeout(liveStopTimer); liveStopTimer = null; }
 }
 
@@ -456,20 +481,25 @@ async function sendToContact(channel) {
   const input = document.getElementById('contactNumber');
   const raw = input ? input.value.trim() : '';
 
-  // Create a "contact" incident that backs the live link, then start tracking.
-  const res = await recordIncident('contact', { live_tracking: true });
+  // Get a reliable fix FIRST, so the incident is created WITH a location —
+  // otherwise the contact's link just shows "waiting for location" forever.
+  const loc = await getLocation();
+
+  const res = await recordIncident('contact', { live_tracking: true, __loc: loc });
   let link = '';
   if (res && res.id && res.share_token) {
     link = window.location.origin + '/track?t=' + encodeURIComponent(res.share_token);
     if (res.update_token) startLiveTracking(res.id, res.update_token, res.city);
-  } else {
-    // fallback (no backend reachable): a static location link
-    const loc = await getLocation();
-    if (loc.lat && loc.lng) link = 'https://maps.google.com/?q=' + loc.lat + ',' + loc.lng;
+  } else if (loc.lat && loc.lng) {
+    link = 'https://maps.google.com/?q=' + loc.lat + ',' + loc.lng;   // fallback: static link
   }
   api.recordContactPing().catch(() => {});
 
   const body = d.contact_msg + (link ? ' ' + link : '') + ' (SafeOut)';
+
+  // Show the "keep this page open" screen first, so it's what the victim sees on return.
+  setSuccess(d.contact_sent_title, d.contact_sent_sub);
+  showScreen('screen-success');
   closeSheet();
 
   if (channel === 'whatsapp') {
@@ -481,7 +511,6 @@ async function sendToContact(channel) {
     const sep = /(iPhone|iPad|Macintosh)/.test(navigator.userAgent) ? '&' : '?';
     window.location.href = 'sms:' + num + sep + 'body=' + encodeURIComponent(body);
   }
-  showScreen('screen-success');
 }
 
 // ---- 7b. "Get me out" -> map + nearest safe places ----
@@ -625,6 +654,18 @@ window.mapsSearch = mapsSearch;
 document.addEventListener('DOMContentLoaded', () => {
   initLang();
   fetchQRInfo();
+
+  // When the victim returns to SafeOut (after opening WhatsApp/the dialer), push a
+  // fresh position immediately so the contact's live link resumes updating.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && liveWatchId !== null && navigator.geolocation) {
+      liveLastSent = 0;
+      navigator.geolocation.getCurrentPosition(
+        p => sendFix(p), () => {},
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+      );
+    }
+  });
 
   // disguise: double-tap the logo -> maintenance screen
   const logoEl = document.querySelector('.logo-img');
